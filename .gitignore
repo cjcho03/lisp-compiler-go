@@ -1,0 +1,13 @@
+# build/test artifacts
+out.s
+a.out
+a.exe
+/build/
+
+# Go build
+bin/
+*.exe
+*.dll
+*.so
+*.test
+*.out
