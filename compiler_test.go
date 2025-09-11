@@ -105,3 +105,48 @@ func TestArithmeticEndToEnd(t *testing.T) {
 		})
 	}
 }
+
+func TestCompareLogicIf(t *testing.T) {
+	tests := []struct {
+		expr string
+		want string
+	}{
+		// Comparisons
+		{"(= 3 3)", "1"},
+		{"(= 3 4)", "0"},
+		{"(< 1 2)", "1"},
+		{"(> 1 2)", "0"},
+		{"(<= 2 2)", "1"},
+		{"(>= 3 4)", "0"},
+		{"(!= 3 4)", "1"},
+		{"(!= 5 5)", "0"},
+		{"(/= 3 4)", "1"},
+		{"(/= 5 5)", "0"},
+
+		// Logical
+		{"(not 0)", "1"},
+		{"(not 5)", "0"},
+		{"(and 1 2 3)", "1"},
+		{"(and 1 0 3)", "0"},
+		{"(or 0 0 7)", "1"},
+		{"(or 0 0 0)", "0"},
+
+		// If
+		{"(if (= 1 1) 42 13)", "42"},
+		{"(if 0 1 2)", "2"},
+		{"(if 5 1 2)", "1"},
+
+		// mixes
+		{"(if (and (< 1 2) (> 5 3)) 9 8)", "9"},
+		{"(if (or (= 0 1) (= 2 2)) 11 12)", "11"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			got := compileAndRun(t, tc.expr)
+			if got != tc.want {
+				t.Fatalf("expr=%s: got %s, want %s", tc.expr, got, tc.want)
+			}
+		})
+	}
+}
