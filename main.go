@@ -33,6 +33,7 @@ func main() {
 
 	var e Emitter
 	e.Prologue()
+	e.envPush()
 	if err := e.Gen(ast); err != nil {
 		fmt.Fprintln(os.Stderr, "codegen error:", err)
 		os.Exit(4)

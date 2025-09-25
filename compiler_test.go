@@ -19,6 +19,7 @@ func compileAndRun(t *testing.T, expr string) string {
 	}
 	var e Emitter
 	e.Prologue()
+	e.envPush()
 	if err := e.Gen(ast); err != nil {
 		t.Fatalf("codegen error for %q: %v", expr, err)
 	}
@@ -139,6 +140,28 @@ func TestCompareLogicIf(t *testing.T) {
 		// mixes
 		{"(if (and (< 1 2) (> 5 3)) 9 8)", "9"},
 		{"(if (or (= 0 1) (= 2 2)) 11 12)", "11"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			got := compileAndRun(t, tc.expr)
+			if got != tc.want {
+				t.Fatalf("expr=%s: got %s, want %s", tc.expr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLetStarAndBegin(t *testing.T) {
+	tests := []struct {
+		expr string
+		want string
+	}{
+		{`(let* ((x 10) (y 20)) (+ x y))`, "30"},
+		{`(let* ((x 2) (y (+ x 3))) y)`, "5"},                   // y sees x (sequential)
+		{`(let* ((x 5)) (begin (+ x 1) (* x 2) (- x 3)))`, "2"}, // begin/progn sequencing; last result returned
+		{`(let* ((x 1)) (let* ((x 7) (y 4)) (+ x y)))`, "11"},   // shadowing in nested scope
+		{`(progn 1 2 3)`, "3"},
 	}
 
 	for _, tc := range tests {

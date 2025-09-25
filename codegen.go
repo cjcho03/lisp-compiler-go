@@ -8,6 +8,12 @@ import (
 type Emitter struct {
 	sb           strings.Builder
 	labelCounter int
+
+	// Lexical environment: stack of scopes. Each symbol maps to its rbp-relative offset in bytes.
+	scopes []map[string]int
+
+	// Bytes of locals allocated in this frame via sub rsp, 8.
+	locals int
 }
 
 func (e *Emitter) String() string { return e.sb.String() }
@@ -18,6 +24,27 @@ func (e *Emitter) newLabel(prefix string) string {
 	return fmt.Sprintf(".L%s_%d", prefix, e.labelCounter)
 }
 
+// env helpers
+func (e *Emitter) envPush() { e.scopes = append(e.scopes, map[string]int{}) }
+func (e *Emitter) envPop()  { e.scopes = e.scopes[:len(e.scopes)-1] }
+
+func (e *Emitter) envBind(name string, offset int) {
+	if len(e.scopes) == 0 {
+		e.envPush()
+	}
+	e.scopes[len(e.scopes)-1][name] = offset
+}
+
+func (e *Emitter) envLookup(name string) (int, bool) {
+	for i := len(e.scopes) - 1; i >= 0; i-- {
+		if off, ok := e.scopes[i][name]; ok {
+			return off, true
+		}
+	}
+	return 0, false
+}
+
+// codegen entry
 func (e *Emitter) Gen(n Node) error {
 	switch t := n.(type) {
 	case *Num:
@@ -25,7 +52,12 @@ func (e *Emitter) Gen(n Node) error {
 		return nil
 
 	case *Symbol:
-		return fmt.Errorf("bare symbol %q not allowed (expect a list)", t.Name)
+		off, ok := e.envLookup(t.Name)
+		if !ok {
+			return fmt.Errorf("unbound variable %q", t.Name)
+		}
+		e.line(fmt.Sprintf("  mov rax, [rbp-%d]", off))
+		return nil
 
 	case *List:
 		if len(t.Items) == 0 {
@@ -60,6 +92,14 @@ func (e *Emitter) Gen(n Node) error {
 		case "if":
 			return e.genIf(args)
 
+		// sequencing
+		case "begin", "progn":
+			return e.genBegin(args)
+
+		// bindings (sequential)
+		case "let*":
+			return e.genLetStar(args)
+
 		default:
 			return fmt.Errorf("unsupported operator %q", head.Name)
 		}
@@ -69,6 +109,7 @@ func (e *Emitter) Gen(n Node) error {
 	}
 }
 
+// Arithmetic
 func (e *Emitter) genArith(op string, args []Node) error {
 	switch op {
 	case "+":
@@ -165,7 +206,6 @@ func (e *Emitter) genComparison(op string, args []Node) error {
 }
 
 // Logical: not, and, or
-
 func (e *Emitter) genNot(args []Node) error {
 	if len(args) != 1 {
 		return fmt.Errorf("not expects 1 arg")
@@ -246,5 +286,73 @@ func (e *Emitter) genIf(args []Node) error {
 		return err
 	}
 	e.line(endLabel + ":")
+	return nil
+}
+
+// Sequencing: begin, progn
+func (e *Emitter) genBegin(args []Node) error {
+	if len(args) == 0 {
+		e.line(" mov rax, 0")
+		return nil
+	}
+	for i := range args {
+		if err := e.Gen(args[i]); err != nil {
+			return err
+		}
+	}
+	// The value of the last expression is the value of (begin ...).
+	return e.Gen(args[len(args)-1])
+}
+
+// Bindings: let* (sequential)
+func (e *Emitter) genLetStar(args []Node) error {
+	if len(args) < 2 {
+		return fmt.Errorf("let* expects ((var expr) ...) and a body")
+	}
+	// args[0] is the bindings list
+	bindList, ok := args[0].(*List)
+	if !ok {
+		return fmt.Errorf("let*: first arg must be a list of bindings")
+	}
+
+	e.envPush()
+	bound := 0
+
+	// Process each (name expr) in order, later inits can see earlier bindings
+	for _, b := range bindList.Items {
+		pair, ok := b.(*List)
+		if !ok || len(pair.Items) != 2 {
+			return fmt.Errorf("let*: each binding must be (name expr)")
+		}
+		nameSym, ok := pair.Items[0].(*Symbol)
+		if !ok {
+			return fmt.Errorf("let*: variable name must be a symbol")
+		}
+
+		// Evaluate initializer in the current env (sees previous let* bindings)
+		if err := e.Gen(pair.Items[1]); err != nil {
+			return err
+		}
+
+		// Allocate 8 bytes for this local and store value
+		e.line(" sub rsp, 8")
+		e.locals += 8
+		offset := e.locals
+		e.line(fmt.Sprintf(" mov [rbp-%d], rax", offset))
+		e.envBind(nameSym.Name, offset)
+		bound++
+	}
+
+	// Evaluate body; result of last expr stays in RAX
+	if err := e.genBegin(args[1:]); err != nil {
+		return err
+	}
+
+	// Pop the locals allocated in this scope and pop scope
+	if bound > 0 {
+		e.line(fmt.Sprintf(" add rsp, %d", bound*8))
+		e.locals -= bound * 8
+	}
+	e.envPop()
 	return nil
 }
