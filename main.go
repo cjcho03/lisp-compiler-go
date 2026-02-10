@@ -25,7 +25,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	ast, err := Parse(src)
+	ast, err := ParseProgram(src)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "parse error:", err)
 		os.Exit(3)

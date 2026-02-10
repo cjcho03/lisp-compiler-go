@@ -96,6 +96,10 @@ func (e *Emitter) Gen(n Node) error {
 		case "begin", "progn":
 			return e.genBegin(args)
 
+		// bindings (parallel)
+		case "let":
+			return e.genLet(args)
+
 		// bindings (sequential)
 		case "let*":
 			return e.genLetStar(args)
@@ -292,16 +296,16 @@ func (e *Emitter) genIf(args []Node) error {
 // Sequencing: begin, progn
 func (e *Emitter) genBegin(args []Node) error {
 	if len(args) == 0 {
-		e.line(" mov rax, 0")
+		e.line("  mov rax, 0")
 		return nil
 	}
-	for i := range args {
-		if err := e.Gen(args[i]); err != nil {
+	for _, a := range args {
+		if err := e.Gen(a); err != nil {
 			return err
 		}
 	}
-	// The value of the last expression is the value of (begin ...).
-	return e.Gen(args[len(args)-1])
+	// The value of the last expression is already in RAX.
+	return nil
 }
 
 // Bindings: let* (sequential)
@@ -335,10 +339,10 @@ func (e *Emitter) genLetStar(args []Node) error {
 		}
 
 		// Allocate 8 bytes for this local and store value
-		e.line(" sub rsp, 8")
+		e.line("  sub rsp, 8")
 		e.locals += 8
 		offset := e.locals
-		e.line(fmt.Sprintf(" mov [rbp-%d], rax", offset))
+		e.line(fmt.Sprintf("  mov [rbp-%d], rax", offset))
 		e.envBind(nameSym.Name, offset)
 		bound++
 	}
@@ -350,9 +354,76 @@ func (e *Emitter) genLetStar(args []Node) error {
 
 	// Pop the locals allocated in this scope and pop scope
 	if bound > 0 {
-		e.line(fmt.Sprintf(" add rsp, %d", bound*8))
+		e.line(fmt.Sprintf("  add rsp, %d", bound*8))
 		e.locals -= bound * 8
 	}
 	e.envPop()
+	return nil
+}
+
+// Bindings: let (parallel)
+// (let ((x e1) (y e2) ...) body...)
+func (e *Emitter) genLet(args []Node) error {
+	if len(args) < 2 {
+		return fmt.Errorf("let expects ((var expr) ...) and a body")
+	}
+	bindList, ok := args[0].(*List)
+	if !ok {
+		return fmt.Errorf("let: first arg must be a list of bindings")
+	}
+
+	type bind struct {
+		name string
+		init Node
+	}
+	binds := make([]bind, 0, len(bindList.Items))
+	for _, b := range bindList.Items {
+		pair, ok := b.(*List)
+		if !ok || len(pair.Items) != 2 {
+			return fmt.Errorf("let: each binding must be (name expr)")
+		}
+		nameSym, ok := pair.Items[0].(*Symbol)
+		if !ok {
+			return fmt.Errorf("let: variable name must be a symbol")
+		}
+		binds = append(binds, bind{name: nameSym.Name, init: pair.Items[1]})
+	}
+
+	n := len(binds)
+
+	base := e.locals
+	if n > 0 {
+		e.line(fmt.Sprintf("  sub rsp, %d", 8*n))
+		e.locals += 8 * n
+	}
+
+	// Evaluate all RHS in the OUTER env, store into reserved slots
+	// Slot offsets: base+8, base+16
+	for i, b := range binds {
+		if err := e.Gen(b.init); err != nil {
+			return err
+		}
+		off := base + 8*(i+1)
+		e.line(fmt.Sprintf("  mov [rbp-%d], rax", off))
+	}
+
+	// Now bind all names at once
+	e.envPush()
+	for i, b := range binds {
+		off := base + 8*(i+1)
+		e.envBind(b.name, off)
+	}
+
+	// Body
+	if err := e.genBegin(args[1:]); err != nil {
+		return err
+	}
+
+	// Pop locals + scope
+	e.envPop()
+	if n > 0 {
+		e.line(fmt.Sprintf("  add rsp, %d", 8*n))
+		e.locals -= 8 * n
+	}
 	return nil
 }

@@ -13,7 +13,7 @@ func compileAndRun(t *testing.T, expr string) string {
 	t.Helper()
 
 	// 1) Build assembly in-process using your parser + codegen
-	ast, err := Parse(expr)
+	ast, err := ParseProgram(expr)
 	if err != nil {
 		t.Fatalf("parse error for %q: %v", expr, err)
 	}
@@ -162,6 +162,51 @@ func TestLetStarAndBegin(t *testing.T) {
 		{`(let* ((x 5)) (begin (+ x 1) (* x 2) (- x 3)))`, "2"}, // begin/progn sequencing; last result returned
 		{`(let* ((x 1)) (let* ((x 7) (y 4)) (+ x y)))`, "11"},   // shadowing in nested scope
 		{`(progn 1 2 3)`, "3"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			got := compileAndRun(t, tc.expr)
+			if got != tc.want {
+				t.Fatalf("expr=%s: got %s, want %s", tc.expr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMultipleTopLevelForms_SpaceSeparated(t *testing.T) {
+	src := "1 2 3" // should behave like (begin 1 2 3) => 3
+	out := compileAndRun(t, src)
+	if strings.TrimSpace(out) != "3" {
+		t.Fatalf("expected 3, got %q", out)
+	}
+}
+
+func TestMultipleTopLevelForms_NewlineSeparated(t *testing.T) {
+	src := "1\n2\n3\n" // should behave like (begin 1 2 3) => 3
+	out := compileAndRun(t, src)
+	if strings.TrimSpace(out) != "3" {
+		t.Fatalf("expected 3, got %q", out)
+	}
+}
+
+func TestLetParallel(t *testing.T) {
+	tests := []struct {
+		expr string
+		want string
+	}{
+		// Basic parallel let
+		{`(let ((x 10) (y 20)) (+ x y))`, "30"},
+
+		// Key semantics: sibling initializers do NOT see each other
+		// Outer x=2; in (let ((x 5) (y x)) y), y's init sees outer x (2), not the new x (5).
+		{`(let* ((x 2)) (let ((x 5) (y x)) y))`, "2"},
+
+		// Contrast: let* DOES allow y to see x
+		{`(let* ((x 2)) (let* ((x 5) (y x)) y))`, "5"},
+
+		// Another example where RHS uses outer bindings
+		{`(let* ((a 7)) (let ((a 1) (b (+ a 3))) b))`, "10"}, // b sees outer a=7
 	}
 
 	for _, tc := range tests {

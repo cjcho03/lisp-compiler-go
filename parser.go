@@ -72,3 +72,30 @@ func (p *parser) parseSexpr() (Node, error) {
 		return nil, fmt.Errorf("unknown token kind %q", t.Kind)
 	}
 }
+
+// parseProgram parses 1+ top-level S-expressions until EOF
+func ParseProgram(input string) (Node, error) {
+	p := &parser{toks: lex(input)}
+
+	var forms []Node
+	for p.peek().Kind != "EOF" {
+		n, err := p.parseSexpr()
+		if err != nil {
+			return nil, err
+		}
+		forms = append(forms, n)
+	}
+
+	if len(forms) == 0 {
+		return nil, fmt.Errorf("empty input")
+	}
+	if len(forms) == 1 {
+		return forms[0], nil
+	}
+
+	// (begin form1 form2 ...)
+	items := make([]Node, 0, len(forms)+1)
+	items = append(items, &Symbol{Name: "begin"})
+	items = append(items, forms...)
+	return &List{Items: items}, nil
+}
