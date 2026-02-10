@@ -11,8 +11,9 @@ Emits Intel-syntax GAS and prints the final result via `printf`.
 - **Comparisons** → boolean `0/1`: `=  !=  /=  <  <=  >  >=`
 - **Logic** (short-circuit): `not  and  or`
 - **Control flow**: `(if cond then else)` (non-zero is true)
-- **Variables (locals)**: **`let*`** with sequential bindings, lexical scoping, shadowing
-- **Sequencing**: **`begin` / `progn`** evaluate multiple expressions; result is the last
+- **Variables (locals)**: **`let`** (parallel) and **`let*`** (sequential) with lexical scoping, shadowing
+- **Sequencing**: **`begin` / `progn`** evaluate multiple expressions; result is the last (also used implicitly for multiple top-level forms)
+- **Program input**: supports multiple top-level forms (treated as implicit `(begin ...)`)
 - **Cross-platform codegen**: Linux (SysV) & Windows (Win64) via build tags
 
 ## Quick start
@@ -28,6 +29,7 @@ Emits Intel-syntax GAS and prints the final result via `printf`.
 
 ```bash
 # From repo root
+mkdir -p build
 echo "(+ 1 (* 2 3))" | go run . > build/out.s
 gcc -no-pie build/out.s -o build/a.out   # on Linux/WSL
 ./build/a.out                             # prints 7
@@ -36,6 +38,7 @@ gcc -no-pie build/out.s -o build/a.out   # on Linux/WSL
 Windows (native MinGW):
 
 ```powershell
+mkdir build -Force | Out-Null
 echo "(+ 1 (* 2 3))" | go run . > build/out.s
 gcc build/out.s -o build/a.exe
 .\build\a.exe
@@ -75,6 +78,14 @@ make test    # runs the Go test suite
 (let* ((x 2) (y (+ x 3))) y)      ; 5   ; y sees x
 (let* ((x 1)) (let* ((x 7) (y 4)) (+ x y))) ; 11 (shadowing)
 
+;; let (parallel) + lexical scope
+(let ((x 10) (y 20)) (+ x y))     ; 30
+
+;; parallel semantics: sibling initializers do NOT see each other’s new bindings
+(let* ((x 2))
+  (let ((x 5) (y x))
+    y))                            ; 2
+
 ;; begin / progn sequencing: value is the last expression
 (begin (+ 5 1) (* 5 2) (- 5 3))    ; 2
 (progn 1 2 3)                      ; 3
@@ -94,7 +105,7 @@ make test    # runs the Go test suite
 ├─ lexer.go               # Tokenizer
 ├─ ast.go                 # AST node types (Num, Symbol, List)
 ├─ parser.go              # Parse S-expressions → AST
-├─ codegen_common.go      # Emitter, env/scope, arithmetic/logic/cmp/if, let*, begin/progn
+├─ codegen_common.go      # Emitter, env/scope, arithmetic/logic/cmp/if, let/let*, begin/progn
 ├─ codegen_linux.go       # //go:build linux → SysV prologue/epilogue (printf@PLT)
 ├─ codegen_windows.go     # //go:build windows → Win64 ABI (RCX/RDX + shadow space)
 ├─ compiler_test.go       # End-to-end tests (compile→gcc→run→assert)
@@ -116,8 +127,11 @@ If you ever see `expected identifier, found "."` during `go test`, you likely ha
 
 ## Design notes
 
-* The program evaluates a single top-level S-expression; the **final value in `RAX`** is printed via `printf`.
-* **Env & locals**: `let*` binds symbols to stack slots at fixed `[rbp - offset]`.
+* The program evaluates one program from stdin: either a single S-expression or multiple top-level forms (implicitly wrapped in `(begin ...)`).
+  The final value in `RAX` is printed via `printf`.
+* **Env & locals**: `let` and `let*` bind symbols to stack slots at fixed `[rbp - offset]`.
+  `let*` allocates per-binding sequentially (`sub rsp, 8` each time).
+  `let` reserves space for all bindings up front, evaluates all RHS in the outer env, then binds names.
   Each binding allocates 8 bytes with `sub rsp, 8`; values are stored and later popped when the scope ends.
 * **Linux (SysV)**: args in `RDI/RSI`, `.section .rodata`, `printf@PLT`.
 * **Windows (Win64)**: args in `RCX/RDX`, 32-byte shadow space, `.data` + `.asciz`.
@@ -125,16 +139,12 @@ If you ever see `expected identifier, found "."` during `go test`, you likely ha
 
 ## Limitations / TODO
 
-* **Parallel `let`** (evaluate all RHS first, then bind)
 * **Assignments** (e.g., `set!`), mutations
 * **Functions**: `defun`, calls, returns (register/stack calling convention)
-* **Multiple top-level forms** (sequence or a dedicated `main` block)
 * **Lists at runtime**: `cons`, `car`, `cdr` (heap / bump allocator)
 * **Errors**: runtime guards (e.g., divide-by-zero)
 
 ## Roadmap (next steps)
 
-* `let` (parallel) and a temporary area for initializers
-* `begin` at top-level / multiple forms
 * `defun` + calls (with proper SysV/Win64 arg passing and caller/callee save)
 * Minimal heap + pairs for list ops
